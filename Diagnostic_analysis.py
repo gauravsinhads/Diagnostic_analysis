@@ -1,308 +1,179 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+import numpy as np
+import plotly.graph_objects as go
 
-# Set the page title for the Streamlit application
-st.set_page_config(page_title='TALENTPOOL BREAKDOWN', layout="wide")
-st.title('TALENTPOOL BREAKDOWN')
+# --- Page Configuration ---
+st.set_page_config(layout="wide", page_title="TPA Recruitment Analysis Dashboard")
 
-# --- Data Loading and Preprocessing ---
-@st.cache_data
-def load_data():
-    """
-    Loads and preprocesses the data from the CSV file.
-    - Reads the CSV into a pandas DataFrame.
-    - Converts date/time columns to datetime objects.
-    - Handles potential errors during data loading.
-    """
-    try:
-        # In your original app, this would be:
-        # return session.sql("""select * from STREAMLITAPPS.TALKPUSH.SOURCING_AND_EARLY_STAGE_METRICS""").toPandas()
-        tp = pd.read_csv("SOURCING & EARLY STAGE METRICS.csv")
+# --- Helper Functions ---
 
-        # Convert date columns to datetime objects, coercing errors to NaT (Not a Time)
-        tp['INVITATIONDT'] = pd.to_datetime(tp['INVITATIONDT'], errors='coerce')
-        tp['ACTIVITY_CREATED_AT'] = pd.to_datetime(tp['ACTIVITY_CREATED_AT'], errors='coerce')
+def calculate_rate(df, score_threshold, comparison, status_to_count):
+    """Calculates the pass or fail rate for a given score threshold."""
+    if comparison == 'above':
+        subset = df[df['TALKSCORE_OVERALL'] >= score_threshold]
+    else:  # below
+        subset = df[df['TALKSCORE_OVERALL'] < score_threshold]
 
-        # Drop rows where essential date columns have NaT values after conversion
-        tp.dropna(subset=['INVITATIONDT', 'ACTIVITY_CREATED_AT'], inplace=True)
+    denominator = subset[subset['Pass/Fail Status'].isin(['Passed HM', 'Failed HM'])]
+    numerator = denominator[denominator['Pass/Fail Status'] == status_to_count]
 
-        return tp
-    except FileNotFoundError:
-        st.error("The data file 'SOURCING & EARLY STAGE METRICS.csv' was not found.")
-        st.info("Please make sure the CSV file is in the same directory as the Streamlit script.")
-        return None
+    if len(denominator) == 0:
+        return "N/A"
 
-# Load the data using the cached function
-tp = load_data()
+    rate = (len(numerator) / len(denominator)) * 100
+    return f"{rate:.1f}%"
 
-# Proceed only if data is loaded successfully
-if tp is not None:
+def calculate_counts(df, score_threshold, comparison):
+    """Calculates the pass and fail counts for a given score threshold."""
+    if comparison == 'above':
+        subset = df[df['TALKSCORE_OVERALL'] >= score_threshold]
+    else:  # below
+        subset = df[df['TALKSCORE_OVERALL'] < score_threshold]
 
-    # --- System Folder Definition ---
-    SYSTEM_FOLDERS = [
-        '', 'Inbox', 'Unresponsive', 'Completed', 'Unresponsive Talkscore', 'Passed MQ', 'Failed MQ',
-        'TalkScore Retake', 'Unresponsive Talkscore Retake', 'Failed TalkScore', 'Cold Leads',
-        'Cold Leads Talkscore', 'Cold Leads Talkscore Retake', 'On hold', 'Rejected',
-        'Talent Pool', 'Shortlisted', 'Hired', 'Candidate Databank', 'For Talkscore',
-        'Tier 2 Program', 'Tier 1 Program', 'For Versant', 'For Reengagement'
+    denominator_df = subset[subset['Pass/Fail Status'].isin(['Passed HM', 'Failed HM'])]
+    pass_count = len(denominator_df[denominator_df['Pass/Fail Status'] == 'Passed HM'])
+    fail_count = len(denominator_df[denominator_df['Pass/Fail Status'] == 'Failed HM'])
+
+    return pass_count, fail_count
+
+# --- Main App Logic ---
+
+st.title("Recruitment Funnel Analysis Dashboard")
+
+# File Uploader
+uploaded_file = st.file_uploader("Upload your tpa.csv file", type="csv")
+
+if uploaded_file is not None:
+    # Load the data
+    tpa = pd.read_csv(uploaded_file)
+
+    # --- Global Data Preparation ---
+    tpa['INVITATIONDT'] = pd.to_datetime(tpa['INVITATIONDT'], errors='coerce')
+    tpa.dropna(subset=['INVITATIONDT'], inplace=True)
+    tpa['Month_Year'] = tpa['INVITATIONDT'].dt.strftime('%Y-%m')
+
+    conditions = [
+        tpa['LABELS'].str.contains('Passed HM', na=False),
+        (tpa['LABELS'].str.contains('Failed HM', na=False)) & (~tpa['LABELS'].str.contains('Passed HM', na=False))
     ]
+    choices = ['Passed HM', 'Failed HM']
+    tpa['Pass/Fail Status'] = np.select(conditions, choices, default='Not Applicable')
+    tpa['TALKSCORE_OVERALL'] = pd.to_numeric(tpa['TALKSCORE_OVERALL'], errors='coerce')
 
-    # --- Filters Section ---
-    st.header("Filters")
+    # --- Output 1: Monthly Pass vs. Fail for B2-C2 Candidates ---
+    st.header("Monthly Pass vs. Fail Analysis for B2-C2 Candidates")
     
-    # Filter 1: Date range for 'INVITATIONDT'
-    min_date = tp['INVITATIONDT'].min().date()
-    max_date = tp['INVITATIONDT'].max().date()
-    
-    default_start_date = max_date - timedelta(days=60)
-    if default_start_date < min_date:
-        default_start_date = min_date
+    cefr_levels_to_include = ['B2', 'B2+', 'C1', 'C2']
+    tpa_filtered = tpa[tpa['CEFR'].isin(cefr_levels_to_include)].copy()
 
-    start_date, end_date = st.date_input(
-        "Invitation Date Range",
-        [default_start_date, max_date],
-        min_value=min_date,
-        max_value=max_date
-    )
-    st.divider()
+    # Calculations for graphs
+    monthly_total = tpa_filtered.groupby('Month_Year')['CAMPAIGNINVITATIONID'].nunique()
+    passed_df = tpa_filtered[tpa_filtered['Pass/Fail Status'] == 'Passed HM']
+    monthly_passed = passed_df.groupby('Month_Year')['CAMPAIGNINVITATIONID'].nunique()
+    monthly_pass_percentage = (monthly_passed / monthly_total * 100).fillna(0)
+    failed_df = tpa_filtered[tpa_filtered['Pass/Fail Status'] == 'Failed HM']
+    monthly_failed = failed_df.groupby('Month_Year')['CAMPAIGNINVITATIONID'].nunique()
+    monthly_fail_percentage = (monthly_failed / monthly_total * 100).fillna(0)
 
-    # Filter 2: Expander for 'CAMPAIGN_SITE' with Select All
-    with st.expander("Select Campaign Site(s)"):
-        unique_sites = sorted(tp['CAMPAIGN_SITE'].dropna().unique())
-        select_all_sites = st.checkbox("Select All Sites", value=True, key='sites_select_all')
-        default_selection_sites = unique_sites if select_all_sites else []
-        selected_sites = st.multiselect(
-            "Campaign Site", options=unique_sites, default=default_selection_sites,
-            label_visibility="collapsed"
-        )
-    st.divider()
+    plot_data_pass = monthly_pass_percentage.reset_index()
+    plot_data_pass.columns = ['Month_Year', 'Pass_Percentage']
+    plot_data_pass = plot_data_pass.sort_values('Month_Year')
+    plot_data_fail = monthly_fail_percentage.reset_index()
+    plot_data_fail.columns = ['Month_Year', 'Fail_Percentage']
+    plot_data_fail = plot_data_fail.sort_values('Month_Year')
 
-    # Filter 3: Dependent Expander for 'CAMPAIGNTITLE' with Select All
-    with st.expander("Select Campaign Title(s)"):
-        if not selected_sites:
-            st.warning("Please select a Campaign Site to see available titles.")
-            selected_titles = []
-        else:
-            available_titles = sorted(tp[tp['CAMPAIGN_SITE'].isin(selected_sites)]['CAMPAIGNTITLE'].dropna().unique())
-            select_all_titles = st.checkbox("Select All Titles", value=True, key='titles_select_all')
-            default_selection_titles = available_titles if select_all_titles else []
-            selected_titles = st.multiselect(
-                "Campaign Title", options=available_titles, default=default_selection_titles,
-                label_visibility="collapsed"
-            )
-    st.divider()
+    total_candidates = tpa_filtered['CAMPAIGNINVITATIONID'].nunique()
+    total_passed = passed_df['CAMPAIGNINVITATIONID'].nunique()
+    overall_pass_percentage = (total_passed / total_candidates * 100) if total_candidates > 0 else 0
+    total_failed = failed_df['CAMPAIGNINVITATIONID'].nunique()
+    overall_fail_percentage = (total_failed / total_candidates * 100) if total_candidates > 0 else 0
 
-    # --- Data Filtering Logic ---
-    start_datetime = datetime.combine(start_date, datetime.min.time())
-    end_datetime = datetime.combine(end_date, datetime.max.time())
+    # Percentage line graph
+    fig_line = go.Figure()
+    fig_line.add_trace(go.Scatter(x=plot_data_pass['Month_Year'], y=plot_data_pass['Pass_Percentage'], mode='lines+markers+text', name='Monthly Passed HM %', line=dict(color='royalblue', width=2), marker=dict(color='navy', size=8), text=[f'{p:.1f}%' for p in plot_data_pass['Pass_Percentage']], textposition="top center"))
+    fig_line.add_trace(go.Scatter(x=plot_data_fail['Month_Year'], y=plot_data_fail['Fail_Percentage'], mode='lines+markers+text', name='Monthly Failed HM %', line=dict(color='indianred', width=2), marker=dict(color='darkred', size=8), text=[f'{p:.1f}%' for p in plot_data_fail['Fail_Percentage']], textposition="bottom center"))
+    fig_line.add_hline(y=overall_pass_percentage, line_width=3, line_dash="dash", line_color="royalblue", annotation_text=f"Overall Pass Avg: {overall_pass_percentage:.1f}%", annotation_position="bottom right", annotation_font=dict(size=14, color="royalblue"))
+    fig_line.add_hline(y=overall_fail_percentage, line_width=3, line_dash="dash", line_color="firebrick", annotation_text=f"Overall Fail Avg: {overall_fail_percentage:.1f}%", annotation_position="top right", annotation_font=dict(size=14, color="firebrick"))
+    fig_line.update_layout(title=dict(text="Monthly Pass vs. Fail Percentage", x=0.5), xaxis_title="Month", yaxis_title="Percentage of Candidates (%)", yaxis=dict(ticksuffix='%'), xaxis=dict(type='category'), plot_bgcolor='white', paper_bgcolor='white', font=dict(family="Arial, sans-serif", size=12, color="black"), showlegend=True, legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
+    st.plotly_chart(fig_line, use_container_width=True)
 
-    filtered_tp = tp[
-        (tp['INVITATIONDT'] >= start_datetime) &
-        (tp['INVITATIONDT'] <= end_datetime) &
-        (tp['CAMPAIGN_SITE'].isin(selected_sites)) &
-        (tp['CAMPAIGNTITLE'].isin(selected_titles))
-    ].copy()
+    # Absolute numbers bar chart
+    counts_df = pd.DataFrame({'Passed': monthly_passed, 'Failed': monthly_failed}).fillna(0).reset_index()
+    fig_bar = go.Figure()
+    fig_bar.add_trace(go.Bar(x=counts_df['Month_Year'], y=counts_df['Passed'], name='Passed HM', marker_color='royalblue', text=counts_df['Passed'], textposition='auto'))
+    fig_bar.add_trace(go.Bar(x=counts_df['Month_Year'], y=counts_df['Failed'], name='Failed HM', marker_color='indianred', text=counts_df['Failed'], textposition='auto'))
+    fig_bar.update_layout(barmode='group', title=dict(text="Monthly Pass vs. Fail Counts", x=0.5), xaxis_title="Month", yaxis_title="Number of Candidates", xaxis=dict(type='category'), plot_bgcolor='white', paper_bgcolor='white', font=dict(family="Arial, sans-serif", size=12, color="black"), legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
+    st.plotly_chart(fig_bar, use_container_width=True)
 
-    # --- Data Analysis and Labeling ---
-    if not filtered_tp.empty:
-        latest_activity = filtered_tp.loc[filtered_tp.groupby('CAMPAIGNINVITATIONID')['ACTIVITY_CREATED_AT'].idxmax()].copy()
+    # --- Background Calculation for Subsequent Tables ---
+    t1_failed_scores = tpa[tpa['LABELS'].str.contains('T1 Failed', na=False)]['TALKSCORE_OVERALL'].dropna()
+    t2_failed_scores = tpa[tpa['LABELS'].str.contains('T2 Failed', na=False)]['TALKSCORE_OVERALL'].dropna()
+    t3_failed_scores = tpa[tpa['LABELS'].str.contains('T3 Failed', na=False)]['TALKSCORE_OVERALL'].dropna()
+    passed_hm_scores = tpa[tpa['Pass/Fail Status'] == 'Passed HM']['TALKSCORE_OVERALL'].dropna()
 
-        # A folder is a 'Client Folder' if it's not null/NaN and not in the SYSTEM_FOLDERS list.
-        from_is_client = (filtered_tp['FOLDER_FROM_TITLE'].notna()) & (~filtered_tp['FOLDER_FROM_TITLE'].isin(SYSTEM_FOLDERS))
-        to_is_client = (filtered_tp['FOLDER_TO_TITLE'].notna()) & (~filtered_tp['FOLDER_TO_TITLE'].isin(SYSTEM_FOLDERS))
-        client_folder_activity_mask = from_is_client | to_is_client
+    stats_passed = passed_hm_scores.describe()
+    stats_t1 = t1_failed_scores.describe()
+    stats_t2 = t2_failed_scores.describe()
+    stats_t3 = t3_failed_scores.describe()
 
-        ids_with_client_folder_history = filtered_tp.loc[client_folder_activity_mask, 'CAMPAIGNINVITATIONID'].unique()
-        latest_activity['in_client_folder'] = latest_activity['CAMPAIGNINVITATIONID'].isin(ids_with_client_folder_history)
+    summary_df_overall = pd.DataFrame({'Passed HM': stats_passed, 'T1 Failed': stats_t1, 'T2 Failed': stats_t2, 'T3 Failed': stats_t3}).T
+    summary_df_overall.index.name = 'Category'
+    summary_df_overall = summary_df_overall.rename(columns={'count': 'Count', 'mean': 'Mean', 'std': 'Std Dev', 'min': 'Min', '25%': '25% (Q1)', '50%': 'Median', '75%': '75% (Q3)', 'max': 'Max'})
+    summary_df_overall['Count'] = summary_df_overall['Count'].astype(int)
+    for col in summary_df_overall.columns:
+        if col != 'Count':
+            summary_df_overall[col] = summary_df_overall[col].round(2)
+    summary_df_overall.reset_index(inplace=True)
 
-        # Define categorization functions
-        def get_row_label(row):
-            if row['FOLDER_TO_TITLE'] == 'Candidate Databank':
-                return 'Candidate Databank (in Cooling Period)'
-            elif (row['FOLDER_TO_TITLE'] == 'Talent Pool' and not row['in_client_folder'] and pd.isnull(row['FAILED_REASON'])):
-                return 'New (for endorsement)'
-            elif (row['in_client_folder'] and row['FOLDER_TO_TITLE'] != 'Candidate Databank' and pd.notnull(row['FAILED_REASON'])):
-                return 'Rejected (for waterfall)'
-            return None # Return None if no category matches
+    # --- Output 2: Overall Summary Statistics ---
+    st.header("Overall Summary Statistics for TALKSCORE_OVERALL")
+    st.dataframe(summary_df_overall)
 
-        # UPDATED: This function now calculates based on the current system time
-        def get_time_bucket(activity_date):
-            if pd.isnull(activity_date): return None
-            # The calculation is now between the current time and the activity time
-            days = (datetime.now() - activity_date).days
-            if days < 1: return "<24hrs"
-            if 1 <= days <= 3: return "1-3 days"
-            if 4 <= days <= 7: return "4-7 days"
-            if 8 <= days <= 15: return "8-15 days"
-            if 16 <= days <= 30: return "16-30 days"
-            return "31+ days"
+    # --- Outputs 3 & 4: Global Analysis Tables ---
+    st.header("Global Analysis Based on Score Thresholds")
 
-        # Apply labels to the latest activities
-        latest_activity['Row_label'] = latest_activity.apply(get_row_label, axis=1)
-        # The call is updated to no longer pass the end_date
-        latest_activity['Column_label'] = latest_activity['ACTIVITY_CREATED_AT'].apply(get_time_bucket)
+    categories = ['Passed HM', 'T1 Failed', 'T2 Failed', 'T3 Failed']
+    global_median_pct_data = []
+    global_q3_pct_data = []
+    global_median_abs_data = []
+    global_q3_abs_data = []
+    stats_df_overall_indexed = summary_df_overall.set_index('Category')
 
-        # Prepare data for download by merging labels into the filtered raw data
-        label_mapping = latest_activity[['CAMPAIGNINVITATIONID', 'Row_label', 'Column_label']]
-        data_for_download = pd.merge(
-            filtered_tp, label_mapping, on='CAMPAIGNINVITATIONID', how='left'
-        )
-        
-        # --- Download Buttons Section ---
-        col1, col2 = st.columns(2)
-        with col1:
-            st.download_button(
-               label="Download Filtered Data as CSV (with labels)",
-               data=data_for_download.to_csv(index=False).encode('utf-8'),
-               file_name='filtered_talentpool_data_with_labels.csv',
-               mime='text/csv',
-            )
-        with col2:
-            st.download_button(
-               label="Download Latest Activity per Candidate",
-               data=latest_activity.to_csv(index=False).encode('utf-8'),
-               file_name='latest_activity_per_candidate.csv',
-               mime='text/csv',
-               type="primary" # This highlights the button
-            )
-        st.divider()
+    for category in categories:
+        if category in stats_df_overall_indexed.index:
+            median_score_threshold = stats_df_overall_indexed.loc[category, 'Median']
+            q3_score_threshold = stats_df_overall_indexed.loc[category, '75% (Q3)']
 
-        # --- Pivot Table Calculation (Time Buckets) ---
-        pivot_data = latest_activity.dropna(subset=['Row_label'])
-        
-        if not pivot_data.empty:
-            st.header("TALENTPOOL BREAKDOWN")
-            pivot_table_time = pd.crosstab(
-                index=pivot_data['Row_label'],
-                columns=pivot_data['Column_label'],
-                values=pivot_data['CAMPAIGNINVITATIONID'],
-                aggfunc='nunique'
-            ).fillna(0)
+            if pd.notna(median_score_threshold):
+                global_median_pct_data.append({'Category Threshold': category, 'Value': median_score_threshold, 'Global HM Pass Rate % Above': calculate_rate(tpa, median_score_threshold, 'above', 'Passed HM'), 'Global HM Fail Rate % Above': calculate_rate(tpa, median_score_threshold, 'above', 'Failed HM'), 'Global HM Pass Rate % Below': calculate_rate(tpa, median_score_threshold, 'below', 'Passed HM'), 'Global HM Fail Rate % Below': calculate_rate(tpa, median_score_threshold, 'below', 'Failed HM')})
+                pass_above, fail_above = calculate_counts(tpa, median_score_threshold, 'above')
+                pass_below, fail_below = calculate_counts(tpa, median_score_threshold, 'below')
+                global_median_abs_data.append({'Category Threshold': category, 'Value': median_score_threshold, 'Global HM Pass Count Above': pass_above, 'Global HM Fail Count Above': fail_above, 'Global HM Pass Count Below': pass_below, 'Global HM Fail Count Below': fail_below})
 
-            time_categories = ["<24hrs", "1-3 days", "4-7 days", "8-15 days", "16-30 days", "31+ days"]
-            row_categories = ['New (for endorsement)', 'Rejected (for waterfall)', 'Candidate Databank (in Cooling Period)']
-            pivot_table_time = pivot_table_time.reindex(index=row_categories, columns=time_categories, fill_value=0)
+            if pd.notna(q3_score_threshold):
+                global_q3_pct_data.append({'Category Threshold': category, 'Value': q3_score_threshold, 'Global HM Pass Rate % Above': calculate_rate(tpa, q3_score_threshold, 'above', 'Passed HM'), 'Global HM Fail Rate % Above': calculate_rate(tpa, q3_score_threshold, 'above', 'Failed HM'), 'Global HM Pass Rate % Below': calculate_rate(tpa, q3_score_threshold, 'below', 'Passed HM'), 'Global HM Fail Rate % Below': calculate_rate(tpa, q3_score_threshold, 'below', 'Failed HM')})
+                pass_above, fail_above = calculate_counts(tpa, q3_score_threshold, 'above')
+                pass_below, fail_below = calculate_counts(tpa, q3_score_threshold, 'below')
+                global_q3_abs_data.append({'Category Threshold': category, 'Value': q3_score_threshold, 'Global HM Pass Count Above': pass_above, 'Global HM Fail Count Above': fail_above, 'Global HM Pass Count Below': pass_below, 'Global HM Fail Count Below': fail_below})
 
-            pivot_table_time['Grand Total'] = pivot_table_time.sum(axis=1)
-            pivot_table_time.loc['Grand Total'] = pivot_table_time.sum(axis=0)
-            
-            st.dataframe(pivot_table_time.style.format("{:.0f}"))
-            st.divider()
+    # Display Percentage Tables
+    st.subheader("Global Pass Rate Analysis Based on Median Score Thresholds (%)")
+    if global_median_pct_data:
+        st.dataframe(pd.DataFrame(global_median_pct_data))
 
-            # --- Pivot Table Calculation (Daily) ---
-            st.header("TALENTPOOL BREAKDOWN (Daily)")
-            
-            last_8_days_start_date = end_date - timedelta(days=7)
-            daily_pivot_data = pivot_data[
-                (pivot_data['ACTIVITY_CREATED_AT'].dt.date >= last_8_days_start_date) & 
-                (pivot_data['ACTIVITY_CREATED_AT'].dt.date <= end_date)
-            ].copy()
-            
-            if not daily_pivot_data.empty:
-                daily_pivot_data['activity_date_str'] = daily_pivot_data['ACTIVITY_CREATED_AT'].dt.strftime('%b_%d')
-                
-                daily_pivot_table = pd.crosstab(
-                    index=daily_pivot_data['Row_label'],
-                    columns=daily_pivot_data['activity_date_str'],
-                    values=daily_pivot_data['CAMPAIGNINVITATIONID'],
-                    aggfunc='nunique'
-                ).fillna(0)
+    st.subheader("Global Pass Rate Analysis Based on Q3 Score Thresholds (%)")
+    if global_q3_pct_data:
+        st.dataframe(pd.DataFrame(global_q3_pct_data))
 
-                daily_cols = [(end_date - timedelta(days=i)).strftime('%b_%d') for i in range(7, -1, -1)]
-                daily_pivot_table = daily_pivot_table.reindex(index=row_categories, columns=daily_cols, fill_value=0)
+    # Display Absolute Count Tables
+    st.subheader("Global Pass/Fail Counts Based on Median Score Thresholds")
+    if global_median_abs_data:
+        st.dataframe(pd.DataFrame(global_median_abs_data))
 
-                daily_pivot_table['Grand Total'] = daily_pivot_table.sum(axis=1)
-                daily_pivot_table.loc['Grand Total'] = daily_pivot_table.sum(axis=0)
+    st.subheader("Global Pass/Fail Counts Based on Q3 Score Thresholds")
+    if global_q3_abs_data:
+        st.dataframe(pd.DataFrame(global_q3_abs_data))
 
-                st.dataframe(daily_pivot_table.style.format("{:.0f}"))
-                st.divider()
-
-                # --- CEFR Breakdown Table ---
-                st.header("New (for endorsement) : CEFR breakdown")
-                
-                new_endorsement_data_daily = daily_pivot_data[daily_pivot_data['Row_label'] == 'New (for endorsement)'].copy()
-
-                if not new_endorsement_data_daily.empty:
-                    if 'CEFR' in new_endorsement_data_daily.columns:
-                        cefr_sequence = ["C1", "C2", "B1", "B1+", "B2", "B2+", "A0", "A2", "A2+"]
-                        
-                        def categorize_cefr(cefr_value):
-                            if cefr_value in cefr_sequence: return cefr_value
-                            elif pd.isna(cefr_value) or cefr_value == '': return 'No CEFR'
-                            else: return 'Others'
-
-                        new_endorsement_data_daily['CEFR_Category'] = new_endorsement_data_daily['CEFR'].apply(categorize_cefr)
-
-                        cefr_pivot_table = pd.crosstab(
-                            index=new_endorsement_data_daily['CEFR_Category'],
-                            columns=new_endorsement_data_daily['activity_date_str'],
-                            values=new_endorsement_data_daily['CAMPAIGNINVITATIONID'],
-                            aggfunc='nunique'
-                        ).fillna(0)
-                        
-                        cefr_row_order = cefr_sequence + ['No CEFR', 'Others']
-                        cefr_pivot_table = cefr_pivot_table.reindex(index=cefr_row_order, columns=daily_cols, fill_value=0)
-                        cefr_pivot_table['Grand Total'] = cefr_pivot_table.sum(axis=1)
-
-                        cefr_pivot_table_to_display = cefr_pivot_table[cefr_pivot_table['Grand Total'] > 0].copy()
-                        
-                        if not cefr_pivot_table_to_display.empty:
-                            cefr_pivot_table_to_display.loc['Grand Total'] = cefr_pivot_table_to_display.sum(axis=0)
-                            st.dataframe(cefr_pivot_table_to_display.style.format("{:.0f}"))
-                        else: st.info(f"No candidates with CEFR data found for this period in the 'New (for endorsement)' category.")
-                    else: st.warning("The 'CEFR' column was not found in the dataset.")
-                else: st.warning(f"No 'New (for endorsement)' candidates found in the 8-day period ending {end_date.strftime('%b %d, %Y')}.")
-                st.divider()
-
-
-                # --- Rejected Waterfall Breakdown Table ---
-                st.header("Rejected (for waterfall): HM Reject reasons with CEFR breakdown")
-                
-                rejected_data_daily = daily_pivot_data[daily_pivot_data['Row_label'] == 'Rejected (for waterfall)'].copy()
-
-                if not rejected_data_daily.empty:
-                    if 'CEFR' in rejected_data_daily.columns and 'FAILED_REASON' in rejected_data_daily.columns:
-                        
-                        def categorize_cefr_reject(cefr_value):
-                            if cefr_value in cefr_sequence: return cefr_value
-                            elif pd.isna(cefr_value) or cefr_value == '': return 'No CEFR'
-                            else: return 'Others'
-                        
-                        rejected_data_daily['CEFR_Category'] = rejected_data_daily['CEFR'].apply(categorize_cefr_reject)
-                        rejected_data_daily['FAILED_REASON_filled'] = rejected_data_daily['FAILED_REASON'].fillna('No Reason Provided')
-
-                        rejection_pivot = pd.crosstab(
-                            index=[rejected_data_daily['FAILED_REASON_filled'], rejected_data_daily['CEFR_Category']],
-                            columns=rejected_data_daily['activity_date_str'],
-                            values=rejected_data_daily['CAMPAIGNINVITATIONID'],
-                            aggfunc='nunique'
-                        ).fillna(0)
-                        
-                        rejection_pivot.index.set_names(['HM Reject reasons', 'CEFR'], inplace=True)
-
-                        rejection_pivot = rejection_pivot.reindex(columns=daily_cols, fill_value=0)
-                        rejection_pivot['Grand Total'] = rejection_pivot.sum(axis=1)
-
-                        if not rejection_pivot.empty:
-                            rejection_pivot.loc[('Grand Total', ''), :] = rejection_pivot.sum(axis=0)
-                            st.dataframe(rejection_pivot.style.format("{:.0f}"))
-                        else:
-                            st.info("No rejection data to display for the selected period.")
-
-                    else:
-                        st.warning("The 'CEFR' and/or 'FAILED_REASON' columns were not found.")
-                else:
-                    st.warning(f"No 'Rejected (for waterfall)' candidates found in the 8-day period ending {end_date.strftime('%b %d, %Y')}.")
-
-
-            else:
-                st.warning(f"No activity recorded in the 8-day period ending {end_date.strftime('%b %d, %Y')} for the selected filters.")
-
-        else:
-            st.warning("No candidates matched the breakdown criteria for the selected filters.")
-
-    else:
-        st.warning("No data available for the selected filters.")
 else:
-    st.info("Data could not be loaded. Please check the file path and format.")
+    st.info("Please upload a CSV file to begin the analysis.")

@@ -41,12 +41,9 @@ def calculate_counts(df, score_threshold, comparison):
 
 st.title("Recruitment Funnel Analysis Dashboard")
 
-# File Uploader
-uploaded_file = st.file_uploader("Upload your tpa.csv file", type="csv")
-
-if uploaded_file is not None:
-    # Load the data
-    tpa = pd.read_csv(uploaded_file)
+try:
+    # Load the data directly from the CSV file
+    tpa = pd.read_csv('tpa.csv')
 
     # --- Global Data Preparation ---
     tpa['INVITATIONDT'] = pd.to_datetime(tpa['INVITATIONDT'], errors='coerce')
@@ -175,5 +172,7 @@ if uploaded_file is not None:
     if global_q3_abs_data:
         st.dataframe(pd.DataFrame(global_q3_abs_data))
 
-else:
-    st.info("Please upload a CSV file to begin the analysis.")
+except FileNotFoundError:
+    st.error("Error: 'tpa.csv' not found. Please make sure the file is in the same directory as the app.")
+except Exception as e:
+    st.error(f"An error occurred while processing the file: {e}")

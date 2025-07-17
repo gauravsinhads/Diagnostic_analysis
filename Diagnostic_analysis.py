@@ -63,12 +63,22 @@ try:
     if default_start_date < min_date:
         default_start_date = min_date
 
-    start_date, end_date = st.date_input(
+    # FIX: Call the widget and then check its output to prevent range errors.
+    date_range = st.date_input(
         "Invitation Date Range",
         [default_start_date, max_date],
         min_value=min_date,
-        max_value=max_date
+        max_value=max_date,
+        label_visibility="collapsed"
     )
+
+    # Unpack the date range safely
+    if len(date_range) == 2:
+        start_date, end_date = date_range
+    else:
+        # Fallback for safety, though st.date_input with a range should always return 2.
+        start_date, end_date = default_start_date, max_date
+    
     st.divider()
 
     # Filter 2: Expander for 'CAMPAIGN_SITE' with Select All
@@ -89,26 +99,37 @@ try:
             st.warning("Please select a Campaign Site to see available titles.")
             selected_titles = []
         else:
-            available_titles = sorted(tpa[tpa['CAMPAIGN_SITE'].isin(selected_sites)]['CAMPAIGNTITLE'].dropna().unique())
-            select_all_titles = st.checkbox("Select All Titles", value=True, key='titles_select_all')
-            default_selection_titles = available_titles if select_all_titles else []
-            selected_titles = st.multiselect(
-                "Campaign Title", options=available_titles,
-                default=default_selection_titles,
-                label_visibility="collapsed"
-            )
+            # Note: The 'CAMPAIGNTITLE' column was not in the original SQL query.
+            # This assumes it exists in your 'tpa.csv' file.
+            if 'CAMPAIGNTITLE' in tpa.columns:
+                available_titles = sorted(tpa[tpa['CAMPAIGN_SITE'].isin(selected_sites)]['CAMPAIGNTITLE'].dropna().unique())
+                select_all_titles = st.checkbox("Select All Titles", value=True, key='titles_select_all')
+                default_selection_titles = available_titles if select_all_titles else []
+                selected_titles = st.multiselect(
+                    "Campaign Title", options=available_titles,
+                    default=default_selection_titles,
+                    label_visibility="collapsed"
+                )
+            else:
+                st.error("The 'CAMPAIGNTITLE' column was not found in the uploaded data.")
+                selected_titles = []
     st.divider()
 
     # --- Data Filtering Logic ---
     start_datetime = datetime.combine(start_date, datetime.min.time())
     end_datetime = datetime.combine(end_date, datetime.max.time())
 
-    filtered_tpa = tpa[
-        (tpa['INVITATIONDT'] >= start_datetime) &
-        (tpa['INVITATIONDT'] <= end_datetime) &
-        (tpa['CAMPAIGN_SITE'].isin(selected_sites)) &
-        (tpa['CAMPAIGNTITLE'].isin(selected_titles))
-    ].copy()
+    # Build the filter query dynamically
+    query_parts = [
+        "`INVITATIONDT` >= @start_datetime",
+        "`INVITATIONDT` <= @end_datetime",
+        "`CAMPAIGN_SITE` in @selected_sites"
+    ]
+    if 'CAMPAIGNTITLE' in tpa.columns and selected_titles:
+         query_parts.append("`CAMPAIGNTITLE` in @selected_titles")
+
+    # Apply the filters using pd.DataFrame.query for efficiency
+    filtered_tpa = tpa.query(" & ".join(query_parts)).copy()
     
     if filtered_tpa.empty:
         st.warning("No data available for the selected filters. Please adjust your selections.")

@@ -68,8 +68,7 @@ try:
         "Invitation Date Range",
         [default_start_date, max_date],
         min_value=min_date,
-        max_value=max_date,
-        label_visibility="collapsed"
+        max_value=max_date
     )
 
     # Unpack the date range safely

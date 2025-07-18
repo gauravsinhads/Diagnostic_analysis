@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
 # --- Page Configuration ---
-st.set_page_config(layout="wide", page_title="TPA Recruitment Analysis Dashboard")
+st.set_page_config(layout="wide", page_title="Diagnostic_Analysis")
 
 # --- Helper Functions ---
 
@@ -42,7 +42,7 @@ def calculate_counts(df, score_threshold, comparison):
 
 # --- Main App Logic ---
 
-st.title("Recruitment Funnel Analysis Dashboard")
+st.title("Diagnostic_Analysis")
 
 try:
     # Load the data directly from the CSV file
